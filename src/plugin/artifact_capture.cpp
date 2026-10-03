@@ -19,10 +19,11 @@
 #define protected public
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/errorOverlay/Overlay.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
@@ -40,6 +41,7 @@
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/pass/PassElement.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
 #undef protected
 #undef private
 
@@ -300,7 +302,7 @@ void noteWindowStreamDiagnostic(std::string_view reason) {
     if (count >= 6)
         return;
     ++count;
-    Log::logger->log(Log::WARN, "[hyprcapture] window stream diagnostic {} (#{})", reason, count);
+    Log::logger->log(Log::WARN, Log::logFnName(), "[hyprcapture] window stream diagnostic {} (#{})", reason, count);
 }
 
 struct WindowStreamSession {
@@ -1705,10 +1707,14 @@ void renderTextureWithAlphaMatte(SP<CTexture> texture, const CBox& box, SP<CFram
         glTexture->swizzle(std::array<GLint, 4>{GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA});
 }
 
+bool windowPinned(const PHLWINDOW& window) {
+    return static_cast<bool>(window->m_state & Desktop::View::WINDOW_STATE_PINNED);
+}
+
 CBox renderedWindowBox(const PHLWINDOW& window, CBox box) {
-    if (window->m_workspace && !window->m_pinned)
+    if (window->m_workspace && !windowPinned(window))
         box.translate(window->m_workspace->m_renderOffset->value());
-    box.translate(window->m_floatingOffset);
+    box.translate(window->presentation().floatingOffset());
     return box;
 }
 
@@ -1721,7 +1727,7 @@ CBox renderedWindowGoalMainSurfaceBox(const PHLWINDOW& window) {
 }
 
 bool isScrollingTiledWindow(const PHLWINDOW& window) {
-    if (!window || window->m_isFloating || !window->m_workspace || !window->m_workspace->m_space)
+    if (!window || window->isFloating() || !window->m_workspace || !window->m_workspace->m_space)
         return false;
 
     const auto algorithm = window->m_workspace->m_space->algorithm();
@@ -1849,7 +1855,7 @@ class WindowAnimationGoalOverride {
 
         m_window->m_realPosition->value() = m_window->m_realPosition->goal() + offset;
         m_window->m_realSize->value() = m_window->m_realSize->goal();
-        m_window->updateWindowDecos();
+        m_window->presentation().updateDecorations();
     }
 
     ~WindowAnimationGoalOverride() {
@@ -1858,7 +1864,7 @@ class WindowAnimationGoalOverride {
 
         m_window->m_realPosition->value() = m_position;
         m_window->m_realSize->value() = m_size;
-        m_window->updateWindowDecos();
+        m_window->presentation().updateDecorations();
     }
 
     WindowAnimationGoalOverride(const WindowAnimationGoalOverride&) = delete;
@@ -2557,7 +2563,7 @@ bool shouldCaptureWindow(const PHLWINDOW& window) {
     if (g_pHyprRenderer)
         return g_pHyprRenderer->shouldRenderWindow(window);
 
-    return window->m_pinned || window->m_workspace->isVisible();
+    return windowPinned(window) || window->m_workspace->visible();
 }
 
 bool isLiveWindowCaptureTarget(const PHLWINDOW& window) {
@@ -2572,8 +2578,8 @@ std::vector<PHLWINDOW> windowsInRenderOrder() {
     ordered.reserve(Desktop::windowState()->windows().size());
     const auto appendPass = [&](bool special, bool floating) {
         for (const auto& window : Desktop::windowState()->windows()) {
-            if (!shouldCaptureWindow(window) || (window->m_pinned && window->m_isFloating) || window->onSpecialWorkspace() != special ||
-                window->m_isFloating != floating)
+            if (!shouldCaptureWindow(window) || (windowPinned(window) && window->isFloating()) || window->onSpecialWorkspace() != special ||
+                window->isFloating() != floating)
                 continue;
 
             ordered.push_back(window);
@@ -2586,7 +2592,7 @@ std::vector<PHLWINDOW> windowsInRenderOrder() {
     appendPass(true, true);
 
     for (const auto& window : Desktop::windowState()->windows()) {
-        if (!shouldCaptureWindow(window) || !window->m_pinned || !window->m_isFloating)
+        if (!shouldCaptureWindow(window) || !windowPinned(window) || !window->isFloating())
             continue;
 
         ordered.push_back(window);
@@ -2609,15 +2615,15 @@ void populateWorkspaceWindowMetadata(const PHLMONITOR& monitor, MonitorInfo& inf
         const bool onActiveWorkspace = window->m_workspace == monitor->m_activeWorkspace;
         const bool onActiveSpecialWorkspace =
             monitor->m_activeSpecialWorkspace && window->m_workspace == monitor->m_activeSpecialWorkspace;
-        const bool pinnedOnMonitor = window->m_pinned && windowMonitor && windowMonitor == monitor;
+        const bool pinnedOnMonitor = windowPinned(window) && windowMonitor && windowMonitor == monitor;
         if (onActiveWorkspace || onActiveSpecialWorkspace || pinnedOnMonitor)
             workspaceWindows.push_back(window);
     }
 
     info.workspaceWindowCount = static_cast<int>(std::min(workspaceWindows.size(), MAX_SESSION_WINDOWS));
     if (workspaceWindows.size() == 1) {
-        info.singleWorkspaceWindowClass = boundedString(workspaceWindows.front()->m_class, MAX_WINDOW_METADATA_BYTES);
-        info.singleWorkspaceWindowTitle = boundedString(workspaceWindows.front()->m_title, MAX_WINDOW_METADATA_BYTES);
+        info.singleWorkspaceWindowClass = boundedString(workspaceWindows.front()->metadata().appID(), MAX_WINDOW_METADATA_BYTES);
+        info.singleWorkspaceWindowTitle = boundedString(workspaceWindows.front()->metadata().title(), MAX_WINDOW_METADATA_BYTES);
     }
 }
 
@@ -2725,7 +2731,12 @@ int colorByte(float value) {
 }
 
 ShadowColorBytes shadowColorBytes(const PHLWINDOW& window) {
-    const CHyprColor color = window && !window->m_realShadowColor.m_colors.empty() ? window->m_realShadowColor.m_colors.front() : CHyprColor(0xee1a1a1a);
+    CHyprColor color{0xee1a1a1a};
+    if (window && window->presentation().m_shadowDecoration) {
+        const auto colors = window->presentation().m_shadowDecoration->m_gradient.renderState().current.m_colors;
+        if (!colors.empty())
+            color = colors.front();
+    }
     return {
         .r = colorByte(color.r),
         .g = colorByte(color.g),
@@ -2834,24 +2845,24 @@ double shadowRoundingPx(const PHLWINDOW& window, double scale) {
     if (!window)
         return 0.0;
 
-    const double borderSize = window->m_X11DoesntWantBorders ? 0.0 : std::max(0, window->getRealBorderSize());
-    const double roundingBase = std::max(0.0F, window->rounding());
-    const double roundingPower = std::clamp(static_cast<double>(window->roundingPower()), 1.0, 10.0);
+    const double borderSize = window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
+    const double roundingBase = std::max(0.0F, window->presentation().rounding());
+    const double roundingPower = std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
     const double correctionOffset = borderSize * (std::sqrt(2.0) - 1.0) * std::max(2.0 - roundingPower, 0.0);
     const double rounding = roundingBase > 0.0 ? (roundingBase + borderSize) - correctionOffset : 0.0;
     return std::max(0.0, rounding * scale);
 }
 
 double shadowBorderPx(const PHLWINDOW& window, double scale) {
-    if (!window || window->m_X11DoesntWantBorders)
+    if (!window || window->backend().traits().suggestsNoBorder)
         return 0.0;
-    return std::max(0.0, static_cast<double>(std::max(0, window->getRealBorderSize())) * scale);
+    return std::max(0.0, static_cast<double>(std::max(0, window->presentation().borderSize())) * scale);
 }
 
 double windowRoundingPx(const PHLWINDOW& window, double scale) {
     if (!window)
         return 0.0;
-    return std::max(0.0, static_cast<double>(window->rounding()) * scale);
+    return std::max(0.0, static_cast<double>(window->presentation().rounding()) * scale);
 }
 
 int configuredShadowRangePx(double scale) {
@@ -2936,7 +2947,7 @@ std::optional<ShadowRenderGeometry> shadowRenderGeometry(const RgbaReadback& rea
         .range = range,
         .rounding = shadowRoundingPx(window, shadowScale),
         .windowRounding = windowRoundingPx(window, shadowScale),
-        .roundingPower = window ? std::clamp(static_cast<double>(window->roundingPower()), 1.0, 10.0) : 2.0,
+        .roundingPower = window ? std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0) : 2.0,
         .shadowPower = std::clamp(sc<int>(*PSHADOWPOWER), 1, 4),
         .sharp = configuredShadowSharp(),
     };
@@ -3170,7 +3181,7 @@ void compositeOutsideWindowOverSolidBackground(RgbaReadback& frame,
         return;
 
     const double rounding = windowRoundingPx(window, std::max(scaleX, scaleY));
-    const double roundingPower = window ? std::clamp(static_cast<double>(window->roundingPower()), 1.0, 10.0) : 2.0;
+    const double roundingPower = window ? std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0) : 2.0;
     for (int y = 0; y < frame.height; ++y) {
         for (int x = 0; x < frame.width; ++x) {
             if (hyprlandPointInRoundedRect(x + 0.5, y + 0.5, visibleLeft, visibleTop, visibleRight, visibleBottom, rounding, roundingPower))
@@ -3501,15 +3512,15 @@ CaptureSession captureCompositorArtifacts(const CaptureDefaults& defaults, bool 
             info.selectionGeometry = overviewSelectionIt->second;
         if (isScrollingTiledWindow(window))
             info.selectionClipGeometry = monitorRect(monitor);
-        info.title = boundedString(window->m_title, MAX_WINDOW_METADATA_BYTES);
-        info.appClass = boundedString(window->m_class, MAX_WINDOW_METADATA_BYTES);
+        info.title = boundedString(window->metadata().title(), MAX_WINDOW_METADATA_BYTES);
+        info.appClass = boundedString(window->metadata().appID(), MAX_WINDOW_METADATA_BYTES);
         info.focused = window == Desktop::focusState()->window();
         info.fullscreen = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_FULLSCREEN;
         info.zIndex = z++;
         const bool dontRound = info.fullscreen;
-        info.rounding = dontRound ? 0.0 : std::max(0.0F, window->rounding());
-        info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->roundingPower()), 1.0, 10.0);
-        info.borderSize = dontRound || window->m_X11DoesntWantBorders ? 0.0 : std::max(0, window->getRealBorderSize());
+        info.rounding = dontRound ? 0.0 : std::max(0.0F, window->presentation().rounding());
+        info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
+        info.borderSize = dontRound || window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
         const auto path = root / ("window-" + pointerId(window.get()) + ".rgba");
         CBox artifactBox;
         const std::size_t windowIndex = session.windows.size();
@@ -3578,15 +3589,15 @@ LaunchResult captureWindowArtifactFromRequestFile(const std::string& path) {
 
     WindowInfo info;
     info.address = "0x" + pointerId(window.get());
-    info.title = boundedString(window->m_title, MAX_WINDOW_METADATA_BYTES);
-    info.appClass = boundedString(window->m_class, MAX_WINDOW_METADATA_BYTES);
+    info.title = boundedString(window->metadata().title(), MAX_WINDOW_METADATA_BYTES);
+    info.appClass = boundedString(window->metadata().appID(), MAX_WINDOW_METADATA_BYTES);
     info.focused = window == Desktop::focusState()->window();
     info.fullscreen = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_FULLSCREEN;
     info.zIndex = 0;
     const bool dontRound = info.fullscreen;
-    info.rounding = dontRound ? 0.0 : std::max(0.0F, window->rounding());
-    info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->roundingPower()), 1.0, 10.0);
-    info.borderSize = dontRound || window->m_X11DoesntWantBorders ? 0.0 : std::max(0, window->getRealBorderSize());
+    info.rounding = dontRound ? 0.0 : std::max(0.0F, window->presentation().rounding());
+    info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
+    info.borderSize = dontRound || window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
     info.visibleGeometry = toRect(renderedWindowGoalMainSurfaceBox(window));
 
     const bool renderDecorations = request->defaults.windowBorder == DecorationPolicy::Keep || request->defaults.windowShadow == DecorationPolicy::Keep;
@@ -3731,12 +3742,12 @@ bool captureWindowGpuStreamFrame(WindowStreamSession& session, const WindowStrea
     const CBox sampledBox = renderedWindowBox(window, window->getFullWindowBoundingBox());
     const CBox sampledVisibleBox = renderedWindowGoalMainSurfaceBox(window);
     std::optional<gpuwire::InputGeometry> frozenInput;
-    if (!window->m_isX11 && session.targetSurface && window->getPID() > 0) {
+    if (!window->backend().isX11() && session.targetSurface && window->backend().pid() > 0) {
         const auto size = session.targetSurface->m_current.size;
         frozenInput = gpuwire::InputGeometry{
             .window = reinterpret_cast<std::uintptr_t>(window.get()),
             .surface = reinterpret_cast<std::uintptr_t>(session.targetSurface.get()),
-            .pid = static_cast<std::uint64_t>(window->getPID()),
+            .pid = static_cast<std::uint64_t>(window->backend().pid()),
             .contentX = sampledVisibleBox.x, .contentY = sampledVisibleBox.y,
             .contentWidth = sampledVisibleBox.w, .contentHeight = sampledVisibleBox.h,
             .surfaceWidth = size.x, .surfaceHeight = size.y,

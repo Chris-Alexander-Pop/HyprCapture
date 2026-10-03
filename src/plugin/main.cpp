@@ -270,7 +270,8 @@ void installOverlayLayerRule() {
 
     SP<CLayerRule> rule = makeShared<CLayerRule>(kOverlayLayerRuleName);
     rule->registerMatch(RULE_PROP_NAMESPACE, "^hyprcapture-ui$");
-    rule->addEffect(LAYER_RULE_EFFECT_NO_ANIM, "1");
+    if (const auto added = rule->addEffect(LAYER_RULE_EFFECT_NO_ANIM, "1"); !added)
+        hyprcapture::notifyUser("failed to disable overlay animation: " + added.error(), hyprcapture::NotificationLevel::Error, 5000);
     ruleEngine()->registerRule(SP<IRule>{rule});
 }
 
@@ -492,6 +493,11 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_pluginHandle = handle;
+
+    // The inline client hash has to be referenced or the commit string is
+    // dropped from the plugin binary.
+    if (std::string_view{__hyprland_api_get_hash()} != __hyprland_api_get_client_hash())
+        hyprcapture::notifyUser("HyprCapture was built against a different Hyprland than the one running", hyprcapture::NotificationLevel::Error, 5000);
 
     registerConfigValues();
 
