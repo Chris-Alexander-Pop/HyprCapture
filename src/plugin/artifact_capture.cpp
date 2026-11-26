@@ -3372,11 +3372,20 @@ bool hyprlandPointInRoundedRect(double x, double y, double left, double top, dou
     return modifiedShadowLength(dx, dy, roundingPower) <= radius;
 }
 
+// Border width for capture geometry. Wayland leaves suggestsNoBorder unset, and
+// backend().traits() is a virtual call that has taken the compositor down from
+// this path, so the drawn border comes from presentation only.
+int captureWindowBorderPx(const PHLWINDOW& window) {
+    if (!window)
+        return 0;
+    return std::max(0, window->presentation().borderSize());
+}
+
 double shadowRoundingPx(const PHLWINDOW& window, double scale) {
     if (!window)
         return 0.0;
 
-    const double borderSize = window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
+    const double borderSize = captureWindowBorderPx(window);
     const double roundingBase = std::max(0.0F, window->presentation().rounding().max());
     const double roundingPower = std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
     const double correctionOffset = borderSize * (std::sqrt(2.0) - 1.0) * std::max(2.0 - roundingPower, 0.0);
@@ -3385,9 +3394,9 @@ double shadowRoundingPx(const PHLWINDOW& window, double scale) {
 }
 
 double shadowBorderPx(const PHLWINDOW& window, double scale) {
-    if (!window || window->backend().traits().suggestsNoBorder)
+    if (!window)
         return 0.0;
-    return std::max(0.0, static_cast<double>(std::max(0, window->presentation().borderSize())) * scale);
+    return std::max(0.0, static_cast<double>(captureWindowBorderPx(window)) * scale);
 }
 
 double windowRoundingPx(const PHLWINDOW& window, double scale) {
@@ -4120,7 +4129,7 @@ CaptureSession captureCompositorArtifacts(const CaptureDefaults& defaults, bool 
         const bool dontRound = info.fullscreen;
         info.rounding = dontRound ? 0.0 : std::max(0.0F, window->presentation().rounding().max());
         info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
-        info.borderSize = dontRound || window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
+        info.borderSize = dontRound ? 0.0 : captureWindowBorderPx(window);
         const std::string artifactId = pointerId(window.get()) + "-" + std::to_string(info.zIndex);
         const auto path = root / ("window-" + artifactId + ".rgba");
         CBox artifactBox;
@@ -4267,7 +4276,7 @@ LaunchResult captureWindowArtifactFromRequestFile(const std::string& path) {
     const bool dontRound = info.fullscreen;
     info.rounding = dontRound ? 0.0 : std::max(0.0F, window->presentation().rounding().max());
     info.roundingPower = dontRound ? 2.0 : std::clamp(static_cast<double>(window->presentation().roundingPower()), 1.0, 10.0);
-    info.borderSize = dontRound || window->backend().traits().suggestsNoBorder ? 0.0 : std::max(0, window->presentation().borderSize());
+    info.borderSize = dontRound ? 0.0 : captureWindowBorderPx(window);
     info.visibleGeometry = toRect(renderedWindowGoalMainSurfaceBox(window));
 
     const bool renderDecorations = request->defaults.windowBorder == DecorationPolicy::Keep || request->defaults.windowShadow == DecorationPolicy::Keep;
